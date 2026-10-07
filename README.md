@@ -3,7 +3,7 @@
 React (frontend) + Spring Boot (backend) + MySQL (database).
 
 ```
-expense-tracker/
+Expense_tracker_app/          (repository root)
 ├── backend/    Spring Boot REST API (Maven, Java 17+)
 └── frontend/   React 18 app (static files, no build step)
 ```
