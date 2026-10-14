@@ -32,6 +32,11 @@ public class GlobalExceptionHandler {
         return build(HttpStatus.BAD_REQUEST, "Malformed request or invalid value", null);
     }
 
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<Map<String, Object>> illegalArgument(IllegalArgumentException ex) {
+        return build(HttpStatus.BAD_REQUEST, ex.getMessage(), null);
+    }
+
     private ResponseEntity<Map<String, Object>> build(HttpStatus status, String message, Object fields) {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("status", status.value());

@@ -32,8 +32,24 @@
   };
 
   /* ---------- API helper ---------- */
+  var AUTH_STORAGE_KEY = "expense_tracker_auth";
+  function readStoredAuth() {
+    try {
+      return JSON.parse(localStorage.getItem(AUTH_STORAGE_KEY) || "null");
+    } catch (e) { return null; }
+  }
+  function writeStoredAuth(auth) {
+    if (auth) localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(auth));
+    else localStorage.removeItem(AUTH_STORAGE_KEY);
+  }
   function api(path, options) {
-    return fetch(path, Object.assign({ headers: { "Content-Type": "application/json" } }, options)).then(function (res) {
+    var auth = readStoredAuth();
+    var headers = Object.assign({ "Content-Type": "application/json" }, (options && options.headers) || {});
+    if (auth && auth.token && !headers.Authorization) {
+      headers.Authorization = "Bearer " + auth.token;
+    }
+    var fetchOptions = Object.assign({ headers: headers }, options);
+    return fetch(path, fetchOptions).then(function (res) {
       if (res.status === 204) return null;
       return res.json().catch(function () { return {}; }).then(function (body) {
         if (!res.ok) {
@@ -230,10 +246,60 @@
         }))));
   }
 
+  /* ---------- Auth ---------- */
+  function AuthPage(props) {
+    var formState = useState({ name: "", email: "", password: "" }), form = formState[0], setForm = formState[1];
+    var tabState = useState("login"), mode = tabState[0], setMode = tabState[1];
+    var errorState = useState(""), error = errorState[0], setError = errorState[1];
+    var loadingState = useState(false), loading = loadingState[0], setLoading = loadingState[1];
+
+    function update(key, value) {
+      var next = Object.assign({}, form, { [key]: value });
+      setForm(next);
+      if (error) setError("");
+    }
+
+    function submit(e) {
+      e.preventDefault();
+      setLoading(true);
+      setError("");
+      var endpoint = mode === "signup" ? "/api/auth/signup" : "/api/auth/login";
+      var payload = { email: form.email.trim(), password: form.password };
+      if (mode === "signup") payload.name = form.name.trim();
+      api((API_BASE || "") + endpoint, { method: "POST", body: JSON.stringify(payload) })
+        .then(function (user) {
+          writeStoredAuth(user);
+          props.onAuth(user);
+        })
+        .catch(function (err) {
+          setError(err.message || "Authentication failed");
+        })
+        .then(function () { setLoading(false); });
+    }
+
+    return h("div", { className: "auth-shell" },
+      h("div", { className: "auth-card" },
+        h("div", { className: "auth-top" },
+          h("span", { className: "auth-badge" }, "Expense Tracker"),
+          h("div", { className: "toggle" },
+            h("button", { className: mode === "login" ? "active" : "", onClick: function () { setMode("login"); } }, "Login"),
+            h("button", { className: mode === "signup" ? "active" : "", onClick: function () { setMode("signup"); } }, "Sign up"))),
+        h("form", { onSubmit: submit, className: "auth-form" },
+          mode === "signup" ? h("label", { className: "field" }, "Full name",
+            h("input", { type: "text", placeholder: "Jane Doe", value: form.name, onChange: function (e) { update("name", e.target.value); }, required: true })) : null,
+          h("label", { className: "field" }, "Email",
+            h("input", { type: "email", placeholder: "you@example.com", value: form.email, onChange: function (e) { update("email", e.target.value); }, required: true })),
+          h("label", { className: "field" }, "Password",
+            h("input", { type: "password", placeholder: "Minimum 6 characters", value: form.password, onChange: function (e) { update("password", e.target.value); }, required: true, minLength: 6 })),
+          error ? h("div", { className: "field-error" }, error) : null,
+          h("button", { className: "btn wide", type: "submit", disabled: loading }, loading ? "Please wait..." : (mode === "signup" ? "Create account" : "Log in")))));
+  }
+
   /* ---------- App ---------- */
   var EMPTY_FILTERS = { q: "", category: "", from: "", to: "" };
 
   function App() {
+    var authState = useState(readStoredAuth()), user = authState[0], setUser = authState[1];
     var s1 = useState([]), expenses = s1[0], setExpenses = s1[1];
     var s2 = useState(null), summary = s2[0], setSummary = s2[1];
     var s3 = useState([]), savedCats = s3[0], setSavedCats = s3[1];
@@ -244,22 +310,25 @@
     var s8 = useState(null), loadError = s8[0], setLoadError = s8[1];
     var s9 = useState(null), toast = s9[0], setToast = s9[1];
     var s10 = useState(""), debouncedQ = s10[0], setDebouncedQ = s10[1];
+    var shouldShowAuth = !user;
 
     useEffect(function () {
+      if (!user) return;
       var t = setTimeout(function () { setDebouncedQ(filters.q); }, 300);
       return function () { clearTimeout(t); };
-    }, [filters.q]);
+    }, [filters.q, user]);
 
     var load = useCallback(function () {
+      if (!user) return Promise.resolve();
       var qs = toQuery({ q: debouncedQ, category: filters.category, from: filters.from, to: filters.to });
       setLoading(true);
       return Promise.all([api(API + qs), api(API + "/summary" + qs), api(API + "/categories")])
         .then(function (r) { setExpenses(r[0]); setSummary(r[1]); setSavedCats(r[2]); setLoadError(null); })
         .catch(function (e) { setLoadError(e.message || "Could not reach the server"); })
         .then(function () { setLoading(false); });
-    }, [debouncedQ, filters.category, filters.from, filters.to]);
+    }, [user, debouncedQ, filters.category, filters.from, filters.to]);
 
-    useEffect(function () { load(); }, [load]);
+    useEffect(function () { if (!user) return; load(); }, [user, load]);
 
     function notify(msg, isError) {
       setToast({ msg: msg, error: !!isError });
@@ -275,15 +344,32 @@
     }
 
     var allNames = Array.from(new Set(DEFAULT_CATEGORIES.concat(savedCats))).sort(function (a, b) { return a.localeCompare(b); });
-    // Stable colour palette based on categories that actually exist
     var colorNames = savedCats.slice().sort(function (a, b) { return a.localeCompare(b); });
     var formCategories = allNames;
     var filterCategories = savedCats;
 
+    function logout() {
+      writeStoredAuth(null);
+      setUser(null);
+      setLoadError(null);
+      setExpenses([]);
+      setSummary(null);
+      setSavedCats([]);
+      setFilters(EMPTY_FILTERS);
+      setFormState(null);
+      setToDelete(null);
+    }
+
+    if (shouldShowAuth) {
+      return h(AuthPage, { onAuth: function (nextUser) { setUser(nextUser); } });
+    }
+
     return h("div", { className: "container" },
       h("div", { className: "header" },
-        h("div", null, h("h1", null, "Expense Tracker"), h("p", null, "Record, filter and understand your spending")),
-        h("button", { className: "btn", onClick: function () { setFormState({ expense: null }); } }, "+ Add expense")),
+        h("div", null, h("h1", null, "Expense Tracker"), h("p", null, "Welcome back, " + user.name + ". Record, filter and understand your spending")),
+        h("div", { className: "header-actions" },
+          h("button", { className: "btn", onClick: function () { setFormState({ expense: null }); } }, "+ Add expense"),
+          h("button", { className: "btn ghost", onClick: logout }, "Log out"))),
 
       loadError ? h("div", { className: "banner" }, "Could not load data: " + loadError + ". Is the backend running and MySQL reachable?") : null,
 
